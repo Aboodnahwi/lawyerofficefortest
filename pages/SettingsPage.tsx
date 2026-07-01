@@ -174,7 +174,7 @@ const SettingsPage: React.FC<SettingsPageProps> = () => {
         }
       }
       setTimeout(() => {
-        localStorage.setItem("app_version", "30-04-2026");
+        localStorage.setItem("app_version", "1-7-2026");
         window.location.reload();
       }, 1000);
     } catch (error) {

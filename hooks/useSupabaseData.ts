@@ -42,7 +42,7 @@ import {
 } from "../utils/db";
 
 export const APP_DATA_KEY_PREFIX = "lawyerBusinessManagementData";
-export const APP_VERSION = "30-04-2026";
+export const APP_VERSION = "1-7-2026";
 export const get_app_data_key = (user_id: string | null) =>
   user_id ? `${APP_DATA_KEY_PREFIX}_${user_id}` : APP_DATA_KEY_PREFIX;
 
