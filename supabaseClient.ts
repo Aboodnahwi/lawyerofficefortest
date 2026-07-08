@@ -45,12 +45,19 @@ async function robustFetch(
 
     // Retry on common server-side transient errors (502, 503, 504)
     if (!response.ok && [502, 503, 504].includes(response.status)) {
+      if (retries > 0) {
+        console.warn(`robustFetch: Server error ${response.status} on ${urlStr}. Retrying...`);
+        const delay = backoff + Math.random() * backoff;
+        await new Promise((resolve) => setTimeout(resolve, delay));
+        return robustFetch(url, options, retries - 1, backoff * 2);
+      }
+
       if (isAuthEndpoint) {
         // VERY IMPORTANT: gotrue-js will instantly permanently destroy the user's session if a refresh token
         // request returns a 5xx error. To prevent this silent forced logout on transient server issues,
         // we throw a TypeError to trick gotrue-js into treating it as a retryable offline network error.
         throw new TypeError("Failed to fetch");
-      } else if (retries > 0) {
+      } else {
         throw new Error(`HTTP ${response.status}`);
       }
     }
@@ -65,7 +72,7 @@ async function robustFetch(
       message.includes("timeout") ||
       message.includes("connection");
 
-    if (isNetworkError && retries > 0 && !isAuthEndpoint) {
+    if (isNetworkError && retries > 0) {
       console.warn(
         `robustFetch: Retrying ${urlStr} due to network error: ${message}. Retries left: ${retries}`,
       );
@@ -73,6 +80,13 @@ async function robustFetch(
       const delay = backoff + Math.random() * backoff;
       await new Promise((resolve) => setTimeout(resolve, delay));
       return robustFetch(url, options, retries - 1, backoff * 2);
+    }
+
+    if (isAuthEndpoint) {
+      // If we are on an auth endpoint and retries are exhausted or it's a network-like error,
+      // force gotrue-js to treat it as a network/offline issue (TypeError: Failed to fetch)
+      // to prevent it from permanently purging local storage session state.
+      throw new TypeError("Failed to fetch");
     }
 
     throw error;

@@ -512,6 +512,12 @@ const App: React.FC<{ onRefresh: () => void }> = ({ onRefresh }) => {
           JSON.stringify(newSession.user),
         );
       } else {
+        const cached = localStorage.getItem("lawyerAppLastUser");
+        if (cached && event === "SIGNED_OUT") {
+          console.warn("Preventing automatic sign out due to transient error/network issue.");
+          setIsAuthLoading(false);
+          return;
+        }
         setSession(null);
         localStorage.removeItem("lawyerAppLastUser");
       }
