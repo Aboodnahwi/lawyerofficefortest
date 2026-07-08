@@ -883,7 +883,7 @@ const LoginPage: React.FC<auth_page_props> = ({
         }
       }
       setTimeout(() => {
-        localStorage.setItem("app_version", "1-7-2026");
+        localStorage.setItem("app_version", "8-7-2026");
         window.location.reload();
       }, 1000);
     } catch (error) {
@@ -1354,7 +1354,7 @@ const LoginPage: React.FC<auth_page_props> = ({
         </div>
 
         <div className="mt-8 text-center">
-          <p className="text-xs text-gray-400 mb-1">الإصدار: 1-7-2026</p>
+          <p className="text-xs text-gray-400 mb-1">الإصدار: 8-7-2026</p>
           <p className="text-xs text-gray-400">
             جميع حقوق الملكية محفوظة لشركة الحلول التقنية ©{" "}
             {new Date().getFullYear()}
