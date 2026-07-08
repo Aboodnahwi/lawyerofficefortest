@@ -608,7 +608,6 @@ export const upsert_data_to_supabase = async (
       next_session_date: s.next_session_date,
       assignee: s.assignee,
       stage_id: s.stage_id,
-      stage_decision_date: s.stage_decision_date,
       updated_at: s.updated_at,
       user_id: s.user_id || user_id_to_use,
     })),
