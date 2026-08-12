@@ -556,6 +556,7 @@ const LoginPage: React.FC<auth_page_props> = ({
                 password: form.password,
               });
             if (sign_in_data.user) {
+              sessionStorage.setItem(`just_logged_in_user_${sign_in_data.user.id}`, "true");
               on_login_success(sign_in_data.user);
             }
           } else {
@@ -679,46 +680,52 @@ const LoginPage: React.FC<auth_page_props> = ({
           );
 
           // استدعاء نجاح تسجيل الدخول لتغيير واجهة التطبيق
+          sessionStorage.setItem(`just_logged_in_user_${sign_in_data.user.id}`, "true");
           on_login_success(sign_in_data.user);
         }
       } catch (err: any) {
         let error_message = err.message || "فشل تسجيل الدخول.";
-        if (error_message.toLowerCase().includes("failed to fetch")) {
+        const isNetworkErr =
+          error_message.toLowerCase().includes("failed to fetch") ||
+          error_message.toLowerCase().includes("network") ||
+          error_message.toLowerCase().includes("abort") ||
+          !is_online;
+
+        if (isNetworkErr) {
           error_message =
             "تعذر الاتصال بالخادم. يرجى التحقق من اتصالك بالإنترنت، أو التأكد من أن مشروع Supabase الخاص بك يعمل (غير متوقف).";
 
-          // Offline login fallback
-          if (!is_online) {
-            const cached_creds_str = localStorage.getItem(
-              LAST_USER_CREDENTIALS_CACHE_KEY,
-            );
-            const cached_user_str = localStorage.getItem(
-              "lawyerAppLastUserData",
-            );
+          // Offline login fallback: attempt cached credentials login if available
+          const cached_creds_str = localStorage.getItem(
+            LAST_USER_CREDENTIALS_CACHE_KEY,
+          );
+          const cached_user_str = localStorage.getItem(
+            "lawyerAppLastUserData",
+          );
 
-            if (cached_creds_str && cached_user_str) {
-              try {
-                const cached_creds = JSON.parse(cached_creds_str);
-                if (
-                  cached_creds.mobile === form.mobile &&
-                  cached_creds.password === form.password
-                ) {
-                  const cached_user = JSON.parse(cached_user_str);
-                  console.log(
-                    "Offline login successful using cached credentials.",
-                  );
-                  on_login_success(cached_user);
-                  return; // Exit early on successful offline login
-                } else {
-                  error_message = "بيانات الدخول غير صحيحة (وضع عدم الاتصال).";
-                }
-              } catch (e) {
-                console.error("Error parsing cached credentials:", e);
+          if (cached_creds_str && cached_user_str) {
+            try {
+              const cached_creds = JSON.parse(cached_creds_str);
+              if (
+                cached_creds.mobile === form.mobile &&
+                cached_creds.password === form.password
+              ) {
+                const cached_user = JSON.parse(cached_user_str);
+                console.log(
+                  "Offline login successful using cached credentials.",
+                );
+                sessionStorage.setItem(`just_logged_in_user_${cached_user.id}`, "true");
+                on_login_success(cached_user);
+                return; // Exit early on successful offline login
+              } else {
+                error_message = "بيانات الدخول غير صحيحة (وضع عدم الاتصال).";
               }
-            } else {
-              error_message =
-                "لا توجد بيانات تسجيل دخول محفوظة. يجب الاتصال بالإنترنت لتسجيل الدخول لأول مرة.";
+            } catch (e) {
+              console.error("Error parsing cached credentials:", e);
             }
+          } else if (!is_online) {
+            error_message =
+              "لا توجد بيانات تسجيل دخول محفوظة. يجب الاتصال بالإنترنت لتسجيل الدخول لأول مرة.";
           }
         }
         set_error(error_message);
@@ -883,7 +890,7 @@ const LoginPage: React.FC<auth_page_props> = ({
         }
       }
       setTimeout(() => {
-        localStorage.setItem("app_version", "8-7-2026");
+        localStorage.setItem("app_version", "30-04-2026");
         window.location.reload();
       }, 1000);
     } catch (error) {
@@ -1354,7 +1361,7 @@ const LoginPage: React.FC<auth_page_props> = ({
         </div>
 
         <div className="mt-8 text-center">
-          <p className="text-xs text-gray-400 mb-1">الإصدار: 8-7-2026</p>
+          <p className="text-xs text-gray-400 mb-1">الإصدار: 30-04-2026</p>
           <p className="text-xs text-gray-400">
             جميع حقوق الملكية محفوظة لشركة الحلول التقنية ©{" "}
             {new Date().getFullYear()}

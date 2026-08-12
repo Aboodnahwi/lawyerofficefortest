@@ -28,6 +28,7 @@ import {
 } from "./components/icons";
 import ContextMenu, { MenuItem } from "./components/ContextMenu";
 import AdminTaskModal from "./components/AdminTaskModal";
+import { WhatsAppChooserModal } from "./components/WhatsAppChooserModal";
 import { get_supabase_client } from "./supabaseClient";
 import { useOnlineStatus } from "./hooks/useOnlineStatus";
 import { DataProvider } from "./context/DataContext";
@@ -248,6 +249,9 @@ const App: React.FC<{ onRefresh: () => void }> = ({ onRefresh }) => {
   });
   const [selectedDate, setSelectedDate] = useState(new Date());
 
+  const supabase = get_supabase_client();
+  const data = useSupabaseData(session?.user ?? null, isAuthLoading);
+
   const handle_generate_agenda = (event: React.MouseEvent) => {
     const pending_tasks = data.admin_tasks.filter((t) => !t.completed);
     const grouped_pending: Record<string, AdminTask[]> = pending_tasks.reduce(
@@ -305,8 +309,7 @@ const App: React.FC<{ onRefresh: () => void }> = ({ onRefresh }) => {
             });
           }
 
-          const whatsappUrl = `https://wa.me/?text=${encodeURIComponent(text)}`;
-          window.open(whatsappUrl, "_blank");
+          data.share_via_whatsapp(text);
         },
       },
       {
@@ -438,8 +441,6 @@ const App: React.FC<{ onRefresh: () => void }> = ({ onRefresh }) => {
     });
   };
 
-  const supabase = get_supabase_client();
-  const data = useSupabaseData(session?.user ?? null, isAuthLoading);
   const { sync_log: syncLog, clear_sync_log: clearSyncLog } = data;
   const isOnline = data.is_online; // Use isOnline from data instead of calling useOnlineStatus again
 
@@ -512,14 +513,15 @@ const App: React.FC<{ onRefresh: () => void }> = ({ onRefresh }) => {
           JSON.stringify(newSession.user),
         );
       } else {
-        const cached = localStorage.getItem("lawyerAppLastUser");
-        if (cached && event === "SIGNED_OUT") {
-          console.warn("Preventing automatic sign out due to transient error/network issue.");
-          setIsAuthLoading(false);
-          return;
+        const hasCachedUser = !!localStorage.getItem("lawyerAppLastUser");
+        if (hasCachedUser) {
+          console.log(
+            "Preserving active session to prevent unexpected logout during sync or token refresh.",
+          );
+          // Keep current session state so the user remains logged in
+        } else {
+          setSession(null);
         }
-        setSession(null);
-        localStorage.removeItem("lawyerAppLastUser");
       }
       setIsAuthLoading(false);
     });
@@ -536,19 +538,24 @@ const App: React.FC<{ onRefresh: () => void }> = ({ onRefresh }) => {
 
   // Effective Display Name Logic
   const profile = session
-    ? (data.profiles.find((p) => p.id === session.user.id) || (
-        !isOnline ? {
-          id: session.user.id,
-          full_name: session.user.user_metadata?.full_name || "مستخدم دون اتصال",
-          mobile_number: session.user.user_metadata?.mobile_number || "",
-          role: (is_admin_email ? "admin" : (session.user.user_metadata?.role || "user")) as "user" | "admin",
-          is_approved: true,
-          is_active: true,
-          mobile_verified: true,
-          subscription_start_date: new Date().toISOString(),
-          subscription_end_date: new Date(Date.now() + 365 * 24 * 60 * 60 * 1000).toISOString(),
-        } : null
-      ))
+    ? (data.profiles.find((p) => p.id === session.user.id) || {
+        id: session.user.id,
+        full_name:
+          session.user.user_metadata?.full_name ||
+          session.user.email ||
+          "مستخدم",
+        mobile_number: session.user.user_metadata?.mobile_number || "",
+        role: (is_admin_email
+          ? "admin"
+          : session.user.user_metadata?.role || "user") as "user" | "admin",
+        is_approved: true,
+        is_active: true,
+        mobile_verified: true,
+        subscription_start_date: new Date().toISOString(),
+        subscription_end_date: new Date(
+          Date.now() + 365 * 24 * 60 * 60 * 1000,
+        ).toISOString(),
+      })
     : null;
 
   // Admin Role Sync Watchdog: Ensure designated emails always have admin role in DB
@@ -631,7 +638,10 @@ const App: React.FC<{ onRefresh: () => void }> = ({ onRefresh }) => {
       <LoginPage
         key="auth-login"
         on_force_setup={() => setShowConfigModal(true)}
-        on_login_success={(u) => setSession({ user: u } as any)}
+        on_login_success={(u) => {
+          sessionStorage.setItem(`just_logged_in_user_${u.id}`, "true");
+          setSession({ user: u } as any);
+        }}
         sync_log={syncLog}
         on_clear_log={clearSyncLog}
         is_local_empty={data.is_local_empty}
@@ -644,7 +654,8 @@ const App: React.FC<{ onRefresh: () => void }> = ({ onRefresh }) => {
       data.sync_status === "syncing" ||
       data.sync_status === "loading" ||
       isCreatingProfile) &&
-    !profile
+    !profile &&
+    data.is_local_empty // Only show loading screen if local data is empty
   ) {
     // If we have a session and it's not a known admin, and we have mobile metadata, show OTP screen instead of loading
     if (session && !is_admin_email && has_metadata_mobile) {
@@ -814,7 +825,10 @@ const App: React.FC<{ onRefresh: () => void }> = ({ onRefresh }) => {
       <LoginPage
         key="auth-otp"
         on_force_setup={() => setShowConfigModal(true)}
-        on_login_success={(u) => setSession({ user: u } as any)}
+        on_login_success={(u) => {
+          sessionStorage.setItem(`just_logged_in_user_${u.id}`, "true");
+          setSession({ user: u } as any);
+        }}
         initial_mode="otp"
         current_user={session?.user}
         current_mobile={
@@ -953,17 +967,56 @@ const App: React.FC<{ onRefresh: () => void }> = ({ onRefresh }) => {
                     : t,
                 ),
               );
+              // Sync with CaseTask if case_id exists
+              if ((taskData as any).case_id) {
+                data.set_clients((prev: any[]) => prev.map(client => ({
+                    ...client,
+                    cases: client.cases.map((c: any) => c.id === (taskData as any).case_id ? {
+                        ...c,
+                        tasks: c.tasks.map((t: any) => t.id === taskData.id ? { ...t, ...taskData } : t)
+                    } : c)
+                })));
+              }
             } else {
+              const newTaskId = `task-${Date.now()}`;
+              const newTaskObj = {
+                ...taskData,
+                id: newTaskId,
+                completed: false,
+                user_id: data.effective_user_id,
+                updated_at: new Date().toISOString(),
+              };
               data.set_admin_tasks((prev: any[]) => [
                 ...prev,
-                {
-                  ...taskData,
-                  id: `task-${Date.now()}`,
-                  completed: false,
-                  user_id: data.effective_user_id,
-                  updated_at: new Date().toISOString(),
-                },
+                newTaskObj,
               ]);
+              if ((taskData as any).case_id) {
+                data.set_clients((prev: any[]) =>
+                  prev.map((client) => ({
+                    ...client,
+                    cases: client.cases.map((c: any) =>
+                      c.id === (taskData as any).case_id
+                        ? {
+                            ...c,
+                            tasks: [
+                              ...(c.tasks || []),
+                              {
+                                id: newTaskId,
+                                task: taskData.task,
+                                due_date: taskData.due_date,
+                                completed: false,
+                                importance: taskData.importance,
+                                assignee: taskData.assignee,
+                                image_url: taskData.image_url,
+                                updated_at: newTaskObj.updated_at,
+                              },
+                            ],
+                          }
+                        : c,
+                    ),
+                  })),
+                );
+              }
             }
             setIsAdminTaskModalOpen(false);
           }}
@@ -990,6 +1043,13 @@ const App: React.FC<{ onRefresh: () => void }> = ({ onRefresh }) => {
           onNavigate={setCurrentPage}
           permissions={data.permissions}
         />
+        {data.whatsapp_share_data && (
+          <WhatsAppChooserModal
+            text={data.whatsapp_share_data.text}
+            phone={data.whatsapp_share_data.phone}
+            onClose={() => data.set_whatsapp_share_data(null)}
+          />
+        )}
       </div>
     </DataProvider>
   );

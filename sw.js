@@ -1,10 +1,12 @@
 // sw.js - Unified Service Worker for Offline-First Lawyer Management App
-const CACHE_NAME = "lawyer-app-cache-v2026-06-24";
+const CACHE_NAME = "lawyer-app-cache-v2026-08-08-offline-v2";
 
-// The list of URLs to cache (App Shell). Will be populated dynamically during build.
+// App Shell URLs to precache during Service Worker installation
 const urlsToCache = [
   "./",
   "./index.html",
+  "./index.css",
+  "./index.tsx",
   "./manifest.json",
   "./icon.svg",
   "https://cdn.tailwindcss.com",
@@ -17,7 +19,6 @@ self.addEventListener("install", (event) => {
 
   event.waitUntil(
     caches.open(CACHE_NAME).then(async (cache) => {
-      // Fetch and cache all assets, but handle failures gracefully per asset
       const cachePromises = urlsToCache.map(async (url) => {
         try {
           const req = new Request(url, {
@@ -27,19 +28,18 @@ self.addEventListener("install", (event) => {
           if (response.ok || response.type === "opaque") {
             return await cache.put(url, response);
           }
-          throw new Error(`Invalid response status: ${response.status}`);
         } catch (error) {
           console.warn(`Failed to precache ${url}:`, error);
         }
       });
       await Promise.all(cachePromises);
-      console.log("Service Worker: Installation and caching completed.");
+      console.log("Service Worker: Precaching completed.");
     })
   );
 });
 
 self.addEventListener("activate", (event) => {
-  console.log("Service Worker: Activating and cleaning old caches.");
+  console.log("Service Worker: Activating and cleaning obsolete caches.");
   event.waitUntil(
     caches
       .keys()
@@ -55,14 +55,7 @@ self.addEventListener("activate", (event) => {
       })
       .then(() => {
         console.log("Service Worker: Claiming clients.");
-        return self.clients.claim().then(() => {
-          // Notify all open client tabs to reload and use the updated Service Worker
-          return self.clients.matchAll().then((clients) => {
-            clients.forEach((client) => {
-              client.postMessage({ type: "RELOAD_PAGE_NOW" });
-            });
-          });
-        });
+        return self.clients.claim();
       })
   );
 });
@@ -75,18 +68,15 @@ self.addEventListener("fetch", (event) => {
 
   const url = new URL(event.request.url);
 
-  // Bypass Service Worker completely for Supabase sync database calls & local APIs
+  // Bypass Service Worker completely for Supabase sync database calls & backend APIs
   if (url.hostname.includes("supabase.co") || url.pathname.startsWith("/api/")) {
     return;
   }
 
-  // Bypass Vite Hot Module Replacement (HMR) and development compilation assets
+  // Bypass Vite Hot Module Replacement (HMR) websocket pings
   if (
-    url.pathname.includes("@vite") ||
-    url.pathname.includes("?import") ||
     url.pathname.includes("__vite_ping") ||
-    url.pathname.endsWith(".ts") ||
-    url.pathname.endsWith(".tsx")
+    url.pathname.includes("@vite/client")
   ) {
     return;
   }
@@ -109,7 +99,7 @@ self.addEventListener("fetch", (event) => {
     return;
   }
 
-  // Navigation requests: Network first, then fallback to cached index.html
+  // Navigation requests: Network first with robust offline fallback to cached index.html
   if (event.request.mode === "navigate") {
     event.respondWith(
       fetch(event.request)
@@ -118,27 +108,55 @@ self.addEventListener("fetch", (event) => {
             const responseToCache = response.clone();
             caches.open(CACHE_NAME).then((cache) => {
               cache.put(event.request, responseToCache);
+              cache.put("./index.html", responseToCache.clone());
             });
           }
           return response;
         })
-        .catch(() => {
-          return caches.match("/index.html") || caches.match("./index.html") || caches.match("/");
+        .catch(async () => {
+          console.log("Offline navigation fallback requested for:", event.request.url);
+          const cached =
+            (await caches.match(event.request)) ||
+            (await caches.match("./index.html")) ||
+            (await caches.match("/index.html")) ||
+            (await caches.match("./")) ||
+            (await caches.match("/"));
+          
+          if (cached) return cached;
+
+          // Search any matching cache key in CACHE_NAME ending with index.html or /
+          try {
+            const cache = await caches.open(CACHE_NAME);
+            const keys = await cache.keys();
+            for (const key of keys) {
+              if (key.url.endsWith("index.html") || key.url.endsWith("/")) {
+                const match = await cache.match(key);
+                if (match) return match;
+              }
+            }
+          } catch (e) {
+            console.error("Cache lookup error during navigation:", e);
+          }
+
+          return new Response("Offline Page Unavailable", {
+            status: 503,
+            statusText: "Service Unavailable",
+          });
         })
     );
     return;
   }
 
-  // Static Assets (JS, CSS, Images, Fonts, etc.): Cache-first with Network Fallback
+  // Static Assets & Code Modules: Stale-While-Revalidate / Cache-First when Offline
   event.respondWith(
     caches.match(event.request).then((cachedResponse) => {
-      if (cachedResponse) {
+      // If we are offline and have a cached copy, return it immediately
+      if (cachedResponse && (typeof navigator !== "undefined" && !navigator.onLine)) {
         return cachedResponse;
       }
 
       return fetch(event.request)
         .then((networkResponse) => {
-          // Cache successful responses (status 200 or opaque cross-origin)
           if (
             networkResponse &&
             (networkResponse.status === 200 || networkResponse.type === "opaque")
@@ -149,14 +167,24 @@ self.addEventListener("fetch", (event) => {
             });
           }
           return networkResponse;
-          // Note: Express v4 and Vite assets serve correctly
         })
-        .catch((error) => {
-          console.warn("Fetch failed for asset:", url.href, error);
-          // Return a basic offline fallback response for assets if they fail
+        .catch(async (error) => {
+          console.warn("Fetch failed offline for asset:", url.href, error);
+          if (cachedResponse) {
+            return cachedResponse;
+          }
+
+          const altMatch = await caches.match(url.pathname);
+          if (altMatch) return altMatch;
+
+          // Safe fallback for stylesheets
+          if (url.pathname.endsWith(".css")) {
+            return new Response("", { headers: { "Content-Type": "text/css" } });
+          }
+
           return new Response("Offline Resource Unavailable", {
-            status: 408,
-            statusText: "Request Timeout",
+            status: 503,
+            statusText: "Service Unavailable",
           });
         });
     })

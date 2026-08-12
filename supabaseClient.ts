@@ -24,40 +24,46 @@ const supabaseAnonKey =
 
 /**
  * A robust fetch wrapper that handles common network errors with retries and exponential backoff.
- * This helps mitigate "Failed to fetch" errors in unstable network environments.
+ * Handles Request object cloning safely for Android browsers and mobile WebViews.
  */
 async function robustFetch(
-  url: string | URL | Request,
-  options?: RequestInit,
+  input: string | URL | Request,
+  init?: RequestInit,
   retries = 3,
   backoff = 300,
 ): Promise<Response> {
-  const urlStr =
-    typeof url === "string"
-      ? url
-      : url instanceof URL
-        ? url.toString()
-        : url.url;
+  let urlStr = "";
+  let fetchInput: any = input;
+  let fetchInit: RequestInit | undefined = init;
+
+  if (typeof input === "string") {
+    urlStr = input;
+  } else if (input instanceof URL) {
+    urlStr = input.toString();
+  } else if (input && typeof input === "object" && "url" in input) {
+    urlStr = (input as Request).url;
+    try {
+      fetchInput = (input as Request).clone();
+    } catch (e) {
+      fetchInput = urlStr;
+    }
+  } else {
+    urlStr = String(input);
+  }
+
   const isAuthEndpoint = urlStr && urlStr.includes("/auth/v1/");
 
   try {
-    const response = await fetch(url, options);
+    const response = await fetch(fetchInput, fetchInit);
 
     // Retry on common server-side transient errors (502, 503, 504)
     if (!response.ok && [502, 503, 504].includes(response.status)) {
-      if (retries > 0) {
-        console.warn(`robustFetch: Server error ${response.status} on ${urlStr}. Retrying...`);
-        const delay = backoff + Math.random() * backoff;
-        await new Promise((resolve) => setTimeout(resolve, delay));
-        return robustFetch(url, options, retries - 1, backoff * 2);
-      }
-
       if (isAuthEndpoint) {
         // VERY IMPORTANT: gotrue-js will instantly permanently destroy the user's session if a refresh token
         // request returns a 5xx error. To prevent this silent forced logout on transient server issues,
         // we throw a TypeError to trick gotrue-js into treating it as a retryable offline network error.
         throw new TypeError("Failed to fetch");
-      } else {
+      } else if (retries > 0) {
         throw new Error(`HTTP ${response.status}`);
       }
     }
@@ -72,21 +78,14 @@ async function robustFetch(
       message.includes("timeout") ||
       message.includes("connection");
 
-    if (isNetworkError && retries > 0) {
+    if (isNetworkError && retries > 0 && !isAuthEndpoint) {
       console.warn(
         `robustFetch: Retrying ${urlStr} due to network error: ${message}. Retries left: ${retries}`,
       );
       // Exponential backoff with jitter
       const delay = backoff + Math.random() * backoff;
       await new Promise((resolve) => setTimeout(resolve, delay));
-      return robustFetch(url, options, retries - 1, backoff * 2);
-    }
-
-    if (isAuthEndpoint) {
-      // If we are on an auth endpoint and retries are exhausted or it's a network-like error,
-      // force gotrue-js to treat it as a network/offline issue (TypeError: Failed to fetch)
-      // to prevent it from permanently purging local storage session state.
-      throw new TypeError("Failed to fetch");
+      return robustFetch(input, init, retries - 1, backoff * 2);
     }
 
     throw error;

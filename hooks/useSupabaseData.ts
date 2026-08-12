@@ -42,12 +42,12 @@ import {
 } from "../utils/db";
 
 export const APP_DATA_KEY_PREFIX = "lawyerBusinessManagementData";
-export const APP_VERSION = "1-7-2026";
+export const APP_VERSION = "30-04-2026";
 export const get_app_data_key = (user_id: string | null) =>
   user_id ? `${APP_DATA_KEY_PREFIX}_${user_id}` : APP_DATA_KEY_PREFIX;
 
 export type SyncStatus = SyncStatusType;
-const default_assistants = ["أحمد", "فاطمة", "سارة", "بدون تخصيص"];
+const default_assistants = ["بدون تخصيص"];
 
 const get_initial_data = (): AppData => ({
   clients: [],
@@ -103,6 +103,27 @@ const migrate_data = (old_data: any): AppData => {
     client_name: c.client_name || c.clientName || "",
     opponent_name: c.opponent_name || c.opponentName || "",
     stages: (c.stages || []).map(migrate_stage),
+    tasks: (c.tasks || []).map((t: any) => {
+      let img = t.image_url || t.imageUrl;
+      let cleanTask = t.task || "";
+      if (!img && cleanTask.includes("<!--IMG:")) {
+        const match = cleanTask.match(/<!--IMG:([\s\S]*?)-->/);
+        if (match) img = match[1];
+      }
+      if (cleanTask.includes("<!--IMG:")) {
+        cleanTask = cleanTask.replace(/<!--IMG:[\s\S]*?-->/g, "").trim();
+      }
+      return {
+        id: t.id,
+        task: cleanTask,
+        due_date: t.due_date || t.dueDate || "",
+        completed: Boolean(t.completed),
+        importance: t.importance || "normal",
+        assignee: t.assignee,
+        image_url: img,
+        updated_at: t.updated_at || t.updatedAt,
+      };
+    }),
     fee_agreement: c.fee_agreement || c.feeAgreement || "",
     status: c.status || "active",
     updated_at: c.updated_at || c.updatedAt,
@@ -119,18 +140,31 @@ const migrate_data = (old_data: any): AppData => {
     user_id: c.user_id || c.userId,
   });
 
-  const migrate_task = (t: any): AdminTask => ({
-    id: t.id,
-    user_id: t.user_id || t.userId,
-    task: t.task || "",
-    due_date: t.due_date || t.dueDate || "",
-    completed: Boolean(t.completed),
-    importance: t.importance || "normal",
-    assignee: t.assignee,
-    location: t.location,
-    updated_at: t.updated_at || t.updatedAt,
-    order_index: t.order_index ?? t.orderIndex,
-  });
+  const migrate_task = (t: any): AdminTask => {
+    let img = t.image_url || t.imageUrl;
+    let cleanTask = t.task || "";
+    if (!img && cleanTask.includes("<!--IMG:")) {
+      const match = cleanTask.match(/<!--IMG:([\s\S]*?)-->/);
+      if (match) img = match[1];
+    }
+    if (cleanTask.includes("<!--IMG:")) {
+      cleanTask = cleanTask.replace(/<!--IMG:[\s\S]*?-->/g, "").trim();
+    }
+    return {
+      id: t.id,
+      user_id: t.user_id || t.userId,
+      task: cleanTask,
+      due_date: t.due_date || t.dueDate || "",
+      completed: Boolean(t.completed),
+      importance: t.importance || "normal",
+      assignee: t.assignee,
+      location: t.location,
+      image_url: img,
+      case_id: t.case_id || t.caseId,
+      updated_at: t.updated_at || t.updatedAt,
+      order_index: t.order_index ?? t.orderIndex,
+    };
+  };
 
   const migrate_appointment = (a: any): Appointment => ({
     id: a.id,
@@ -283,6 +317,14 @@ export const useSupabaseData = (
     RealtimeAlert[]
   >([]);
   const [is_update_available, set_is_update_available] = React.useState(false);
+  const [whatsapp_share_data, set_whatsapp_share_data] = React.useState<{
+    text: string;
+    phone?: string;
+  } | null>(null);
+
+  const share_via_whatsapp = React.useCallback((text: string, phone?: string) => {
+    set_whatsapp_share_data({ text, phone });
+  }, []);
   const is_online = useOnlineStatus();
 
   const user_ref = React.useRef(user);
@@ -768,12 +810,135 @@ export const useSupabaseData = (
     fetch_and_refresh,
   ]);
 
-  const [is_auto_sync_enabled, set_auto_sync_enabled] = React.useState(true);
-  const [is_auto_backup_enabled, set_auto_backup_enabled] =
-    React.useState(false);
-  const [admin_tasks_layout, set_admin_tasks_layout] = React.useState<
+  const [is_auto_sync_enabled, set_auto_sync_enabled_state] = React.useState<boolean>(() => {
+    try {
+      const saved = localStorage.getItem("is_auto_sync_enabled");
+      if (saved !== null) return JSON.parse(saved);
+    } catch (e) {}
+    return true;
+  });
+
+  const [is_auto_backup_enabled, set_auto_backup_enabled_state] = React.useState<boolean>(() => {
+    try {
+      const saved = localStorage.getItem("is_auto_backup_enabled");
+      if (saved !== null) return JSON.parse(saved);
+    } catch (e) {}
+    return false;
+  });
+
+  const [admin_tasks_layout, set_admin_tasks_layout_state] = React.useState<
     "horizontal" | "vertical"
-  >("vertical");
+  >(() => {
+    try {
+      const saved = localStorage.getItem("admin_tasks_layout");
+      if (saved === "horizontal" || saved === "vertical") return saved;
+    } catch (e) {}
+    return "vertical";
+  });
+
+  // Load user specific settings when user changes
+  React.useEffect(() => {
+    if (!user?.id) return;
+    try {
+      const syncKey = `is_auto_sync_enabled_${user.id}`;
+      const syncSaved = localStorage.getItem(syncKey);
+      if (syncSaved !== null) set_auto_sync_enabled_state(JSON.parse(syncSaved));
+
+      const backupKey = `is_auto_backup_enabled_${user.id}`;
+      const backupSaved = localStorage.getItem(backupKey);
+      if (backupSaved !== null) set_auto_backup_enabled_state(JSON.parse(backupSaved));
+
+      const layoutKey = `admin_tasks_layout_${user.id}`;
+      const layoutSaved = localStorage.getItem(layoutKey);
+      if (layoutSaved === "horizontal" || layoutSaved === "vertical") {
+        set_admin_tasks_layout_state(layoutSaved as "horizontal" | "vertical");
+      }
+    } catch (e) {
+      console.error("Error loading user settings from localStorage:", e);
+    }
+  }, [user?.id]);
+
+  const set_auto_sync_enabled = React.useCallback(
+    (enabled: boolean) => {
+      set_auto_sync_enabled_state(enabled);
+      try {
+        localStorage.setItem("is_auto_sync_enabled", JSON.stringify(enabled));
+        if (user?.id) {
+          localStorage.setItem(`is_auto_sync_enabled_${user.id}`, JSON.stringify(enabled));
+        }
+      } catch (e) {
+        console.error("Error persisting auto sync setting:", e);
+      }
+    },
+    [user?.id],
+  );
+
+  const set_auto_backup_enabled = React.useCallback(
+    (enabled: boolean) => {
+      set_auto_backup_enabled_state(enabled);
+      try {
+        localStorage.setItem("is_auto_backup_enabled", JSON.stringify(enabled));
+        if (user?.id) {
+          localStorage.setItem(`is_auto_backup_enabled_${user.id}`, JSON.stringify(enabled));
+        }
+      } catch (e) {
+        console.error("Error persisting auto backup setting:", e);
+      }
+    },
+    [user?.id],
+  );
+
+  const set_admin_tasks_layout = React.useCallback(
+    (layout: "horizontal" | "vertical") => {
+      set_admin_tasks_layout_state(layout);
+      try {
+        localStorage.setItem("admin_tasks_layout", layout);
+        if (user?.id) {
+          localStorage.setItem(`admin_tasks_layout_${user.id}`, layout);
+        }
+      } catch (e) {
+        console.error("Error persisting admin tasks layout setting:", e);
+      }
+    },
+    [user?.id],
+  );
+
+  // Perform daily auto-backup and download backup on actual user login if enabled
+  React.useEffect(() => {
+    if (!user?.id || !is_auto_backup_enabled || is_data_loading || !data) return;
+
+    const loginFlagKey = `just_logged_in_user_${user.id}`;
+    const isJustLoggedIn = sessionStorage.getItem(loginFlagKey) === "true";
+
+    const todayStr = new Date().toISOString().split("T")[0];
+    const userKey = user.id;
+
+    try {
+      const dataStr = JSON.stringify(data, null, 2);
+      localStorage.setItem(`auto_backup_data_${userKey}`, dataStr);
+      localStorage.setItem(`last_auto_backup_date_${userKey}`, todayStr);
+      localStorage.setItem(`last_auto_backup_time_${userKey}`, new Date().toISOString());
+
+      // Only trigger file download if user performed an explicit login action in this session
+      if (isJustLoggedIn) {
+        sessionStorage.removeItem(loginFlagKey); // Remove flag so page refreshes will NOT download
+
+        const blob = new Blob([dataStr], { type: "application/json" });
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement("a");
+        link.href = url;
+        link.download = `lawyer_backup_${todayStr}.json`;
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+        URL.revokeObjectURL(url);
+        console.log("Backup file downloaded on explicit user login for:", userKey);
+      }
+    } catch (e) {
+      console.error("Failed to process auto backup on login:", e);
+    }
+  }, [is_auto_backup_enabled, is_data_loading, data, user?.id]);
+
   const [location_order, set_location_order] = React.useState<string[]>([]);
 
   const set_full_data = React.useCallback(
@@ -867,7 +1032,8 @@ export const useSupabaseData = (
             ...s,
             client_name: s.client_name || c.name,
             opponent_name: s.opponent_name || cs.opponent_name,
-            case_number: s.case_number || cs.subject || cs.id,
+            case_number: s.case_number || st.case_number || cs.subject || cs.id,
+            court: s.court || st.court || "غير محدد",
             stage_id: s.stage_id || st.id,
             stage_decision_date: st.decision_date,
             is_postponed: Boolean(s.is_postponed),
@@ -1015,6 +1181,9 @@ export const useSupabaseData = (
             : "";
           const storage_path = `${effective_user_id}/${case_id}/${id}${extension ? "." + extension : ""}`;
 
+          // If file is larger than 5MB, mark as local-only error state to avoid cloud storage limits
+          const is_oversized = file.size > 5 * 1024 * 1024;
+
           const new_doc: CaseDocument = {
             id,
             case_id,
@@ -1024,7 +1193,7 @@ export const useSupabaseData = (
             size: file.size,
             added_at: new Date().toISOString(),
             storage_path,
-            local_state: "pending_upload",
+            local_state: is_oversized ? "error" : "pending_upload",
             updated_at: new Date().toISOString(),
           };
 
@@ -1459,6 +1628,9 @@ export const useSupabaseData = (
       }));
     },
     delete_document,
+    whatsapp_share_data,
+    set_whatsapp_share_data,
+    share_via_whatsapp,
     add_documents,
     download_document_file,
     get_document_file,
